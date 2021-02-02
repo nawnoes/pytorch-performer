@@ -2,10 +2,6 @@ import math
 import torch
 import numpy as np
 import torch.nn as nn
-from torch.autograd import Variable
-import torch.nn.functional as F
-from torch.nn import CrossEntropyLoss
-from util import clones
 
 class FAVORAttention(nn.Module):
   def __init__(self):
@@ -22,217 +18,134 @@ class FAVORAttention(nn.Module):
   def forward(self):
     pass
 
-class SelfAttention(nn.Module):
-  def __init__(self):
-    super(SelfAttention,self).__init__()
-    self.matmul = torch.matmul
-    self.softmax = torch.softmax
+def relu_kernel_transformation(data,
+                               is_query,
+                               projection_matrix=None,
+                               numerical_stabilizer=0.001):
+  """Computes features for the ReLU-kernel.
+  ReLU kernel에 대한 Random Features를 계산 from https://arxiv.org/pdf/2009.14794.pdf.
+  Args:
+    data: 입력데이터 텐서, the shape [B, L, H, D], where: B - batch
+                       dimension, L - attention dimensions, H - heads, D - features.
+    is_query: 입력데이터가 쿼리인지 아닌지, 쿼리 또는 키인지를 나타낸다. indicates whether input data is a query oor key tensor.
+    projection_matrix: [M,D] 모양을 가진 랜덤 가우시안 매트릭스 random Gaussian matrix of shape [M, D], where M stands
+      for the number of random features and each D x D sub-block has pairwise
+      orthogonal rows.
+    numerical_stabilizer: 수치 안정성을 위한 작은 값의 양의 상수
+  Returns:
+    대응되는 kernel feature map 반.
+  """
+  del is_query
+  if projection_matrix is None:
+    return nn.relu(data) + numerical_stabilizer
+  else:
+    ratio = 1.0 / torch.sqrt(projection_matrix.shape[0].float())
+    data_dash = ratio * torch.einsum("blhd,md->blhm", data, projection_matrix)
+    return nn.relu(data_dash) + numerical_stabilizer
 
-  def forward(self,query, key, value, mask=None):
-    key_transpose = torch.transpose(key,-2,-1)          # (bath, head_num, d_k, token_)
-    matmul_result = self.matmul(query,key_transpose)    # MatMul(Q,K)
-    d_k = key.size()[-1]
-    attention_score = matmul_result/math.sqrt(d_k)      # Scale
-
-    if mask is not None:
-      attention_score = attention_score.masked_fill(mask == 0, -1e20)
-
-    softmax_attention_score = self.softmax(attention_score,dim=-1)                   # 어텐션 값
-    result = self.matmul(softmax_attention_score,value)
-
-    return result, softmax_attention_score
-
-class MultiHeadAttention(nn.Module):
-  def __init__(self, head_num =8 , d_model = 512,dropout = 0.1):
-    super(MultiHeadAttention,self).__init__()
-
-    self.head_num = head_num
-    self.d_model = d_model
-    self.d_k = self.d_v = d_model // head_num
-
-    self.w_q = nn.Linear(d_model,d_model)
-    self.w_k = nn.Linear(d_model,d_model)
-    self.w_v = nn.Linear(d_model,d_model)
-    self.w_o = nn.Linear(d_model,d_model)
-
-    self.self_attention = SelfAttention()
-    self.dropout = nn.Dropout(p=dropout)
-
-  def forward(self, query, key, value, mask = None):
-    if mask is not None:
-      # Same mask applied to all h heads.
-      mask = mask.unsqueeze(1)
-
-    batche_num = query.size(0)
-
-    query = self.w_q(query).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
-    key = self.w_k(key).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
-    value = self.w_v(value).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
-
-    attention_result, attention_score = self.self_attention(query, key, value, mask)
-    attention_result = attention_result.transpose(1,2).contiguous().view(batche_num, -1, self.head_num * self.d_k)
-
-    return self.w_o(attention_result)
-
-class FeedForward(nn.Module):
-  def __init__(self,d_model, dropout = 0.1):
-    super(FeedForward,self).__init__()
-    self.w_1 = nn.Linear(d_model, d_model*4)
-    self.w_2 = nn.Linear(d_model*4, d_model)
-    self.dropout = nn.Dropout(p=dropout)
-
-  def forward(self, x):
-    return self.w_2(self.dropout(F.relu(self.w_1(x))))
-
-class LayerNorm(nn.Module):
-  def __init__(self, features, eps=1e-6):
-    super(LayerNorm,self).__init__()
-    self.a_2 = nn.Parameter(torch.ones(features))
-    self.b_2 = nn.Parameter(torch.zeros(features))
-    self.eps = eps
-  def forward(self, x):
-    mean = x.mean(-1, keepdim =True) # 평균
-    std = x.std(-1, keepdim=True)    # 표준편차
-
-    return self.a_2 * (x-mean)/ (std + self.eps) + self.b_2
-
-class ResidualConnection(nn.Module):
-  def __init__(self, size, dropout):
-    super(ResidualConnection,self).__init__()
-    self.norm = LayerNorm(size)
-    self.dropout = nn.Dropout(dropout)
-
-  def forward(self, x, sublayer):
-    return x + self.dropout((sublayer(self.norm(x))))
-
-class Encoder(nn.Module):
-  def __init__(self, d_model, head_num, dropout):
-    super(Encoder,self).__init__()
-    self.multi_head_attention = MultiHeadAttention(d_model= d_model, head_num= head_num)
-    self.residual_1 = ResidualConnection(d_model,dropout=dropout)
-
-    self.feed_forward = FeedForward(d_model)
-    self.residual_2 = ResidualConnection(d_model,dropout=dropout)
-
-  def forward(self, input, mask):
-    x = self.residual_1(input, lambda x: self.multi_head_attention(x, x, x, mask))
-    x = self.residual_2(x, lambda x: self.feed_forward(x))
-    return x
-
-class Decoder(nn.Module):
-  def __init__(self, d_model,head_num, dropout):
-    super(Decoder,self).__init__()
-    self.masked_multi_head_attention = MultiHeadAttention(d_model= d_model, head_num= head_num)
-    self.residual_1 = ResidualConnection(d_model,dropout=dropout)
-
-    self.encoder_decoder_attention = MultiHeadAttention(d_model= d_model, head_num= head_num)
-    self.residual_2 = ResidualConnection(d_model,dropout=dropout)
-
-    self.feed_forward= FeedForward(d_model)
-    self.residual_3 = ResidualConnection(d_model,dropout=dropout)
-
-
-  def forward(self, target, encoder_output, target_mask, encoder_mask):
-    # target, x, target_mask, input_mask
-    x = self.residual_1(target, lambda x: self.masked_multi_head_attention(x, x, x, target_mask))
-    x = self.residual_2(x, lambda x: self.encoder_decoder_attention(x, encoder_output, encoder_output, encoder_mask))
-    x = self.residual_3(x, self.feed_forward)
-
-    return x
-
-class Embeddings(nn.Module):
-  def __init__(self, vocab_num, d_model):
-    super(Embeddings,self).__init__()
-    self.emb = nn.Embedding(vocab_num,d_model)
-    self.d_model = d_model
-  def forward(self, x):
+def softmax_kernel_transformation(data,
+                                  is_query,
+                                  projection_matrix=None,
+                                  numerical_stabilizer=0.000001):
+  """
+  FAVOR+ 메커니즘을 사용하여 softmax kernel에 대한 random feature 계산
+  :param data: 입력 텐서. [B,L,H,D] B-batch dimension, L- attention dimensions,
+              H- Heads, D- features
+  :param is_query: 입력 값이 쿼리 또는 인지 나타내는 값
+  :param projection_matrix: [M, D]의 모양을 가진 랜덤 가우시안 매트릭스
+               M - M은 Random Feature 수를 의미하며,
+               각각의 [D,D] 서브 블록은 pairwise orthogonal rows를 가진다.
+  :param numerical_stabilizer: 수치 안정성을 위한 작은 값의 양의 상수
+  :return:
+  """
+  data_normalizer = 1.0 / (torch.sqrt(torch.sqrt(data.shape[-1].float())))
+  data = data_normalizer * data
+  ratio = 1.0 / torch.sqrt(projection_matrix.shape[0].float())
+  data_dash = torch.einsum("blhd,md->blhm", data, projection_matrix)
+  diag_data = torch.square(data)
+  diag_data = torch.sum(diag_data, dim=-1) # 확인 필요.
+  diag_data = diag_data / 2.0
+  diag_data = diag_data.unsqueeze(dim=-1)
+  last_dims_t = (len(data_dash.shape) - 1,)
+  attention_dims_t = (len(data_dash.shape) - 3,)
+  if is_query:
+    data_dash = ratio * (
+        torch.exp(data_dash - diag_data - torch.max(data_dash, dim=-1, keepdims=True)) + numerical_stabilizer)
+  else:
+    # torch.max 부분 수정 필요
     """
-    1) 임베딩 값에 math.sqrt(self.d_model)을 곱해주는 이유는 무엇인지 찾아볼것
-    2) nn.Embedding에 다시 한번 찾아볼것
+    data_dash = ratio * (
+        tf.math.exp(data_dash - diag_data - tf.math.reduce_max(
+            data_dash, axis=last_dims_t + attention_dims_t, keepdims=True)) +
+        numerical_stabilizer)
     """
-    return self.emb(x) * math.sqrt(self.d_model)
+    data_dash = ratio * (
+        torch.exp(data_dash - diag_data - torch.max(data_dash, axis=-1, keepdims=True)) + numerical_stabilizer)
 
-class PositionalEncoding(nn.Module):
-  def __init__(self, max_seq_len, d_model,dropout=0.1):
-    super(PositionalEncoding,self).__init__()
-    self.dropout = nn.Dropout(p=dropout)
+  return data_dash
 
-    pe = torch.zeros(max_seq_len, d_model)
+def noncausal_numerator(qs, ks, vs):
+  """Computes not-normalized FAVOR noncausal attention AV.
+  Args:
+    qs: query_prime tensor of the shape [L,B,H,M].
+    ks: key_prime tensor of the shape [L,B,H,M].
+    vs: value tensor of the shape [L,B,H,D].
+  Returns:
+    Not-normalized FAVOR noncausal attention AV.
+  """
+  kvs = torch.einsum("lbhm,lbhd->bhmd", ks, vs)
+  return torch.einsum("lbhm,bhmd->lbhd", qs, kvs)
 
-    position = torch.arange(0,max_seq_len).unsqueeze(1)
-    base = torch.ones(d_model//2).fill_(10000)
-    pow_term = torch.arange(0, d_model, 2) / torch.tensor(d_model,dtype=torch.float32)
-    div_term = torch.pow(base,pow_term)
+def noncausal_denominator(qs, ks):
+  """Computes FAVOR normalizer in noncausal attention.
+  Args:
+    qs: query_prime tensor of the shape [L,B,H,M].
+    ks: key_prime tensor of the shape [L,B,H,M].
+  Returns:
+    FAVOR normalizer in noncausal attention.
+  """
+  all_ones = torch.ones([ks.shape[0]])
+  ks_sum = torch.einsum("lbhm,l->bhm", ks, all_ones)
+  return torch.einsum("lbhm,bhm->lbh", qs, ks_sum)
 
-    pe[:, 0::2] = torch.sin(position / div_term)
-    pe[:, 1::2] = torch.cos(position / div_term)
+def favor_attention(query, key, value,
+                    kernel_transformation,
+                    causal,
+                    projection_matrix = None):
+  """
+  favor_attention 계산
+  :param query: 쿼리
+  :param key: 키
+  :param value: 밸류
+  :param kernel_transformation: kernel feature를 얻기 위한 tranformation.
+         relu_kernel_transformation나 softmax_kernel_transformation 사용.
+  :param causal: causl or not
+  :param projection_matrix: 사용될 projection matrix
 
-    pe = pe.unsqueeze(0)
+  :return: Favor+ normalized attention
+  """
+  # Kernel Transformation
+  query_prime = kernel_transformation(query, True, projection_matrix) # [B, L, H, M]
+  key_prime = kernel_transformation(key,False,projection_matrix) # [B,L,H,M]
 
-    # pe를 학습되지 않는 변수로 등록
-    self.register_buffer('positional_encoding', pe)
+  # Transpose
+  query_prime = torch.transpose(query_prime,0,1) # [L,B,H,M]
+  key_prime = torch.transpose(key_prime,0,1)   # [L,B,H,M]
+  value = torch.transpose(value,0,1) # [L,B,H,D]
 
-  def forward(self, x):
-    x = x + Variable(self.positional_encoding[:, :x.size(1)], requires_grad=False)
-    return self.dropout(x)
+  # Causal or Not
+  if causal:
+    # 구현 필요
+    pass
+  else:
+    av_attn = noncausal_numerator(query_prime,key_prime, value)
+    attn_normalizer = noncausal_denominator(query_prime,key_prime)
+  av_attn = torch.transpose(av_attn,0,1)
+  attn_normalizer = torch.transpose(attn_normalizer,0,1)
+  attn_normalizer = attn_normalizer.unsqueeze(-1)
 
-class Generator(nn.Module):
-  def __init__(self, d_model, vocab_num):
-    super(Generator, self).__init__()
-    self.proj_1 = nn.Linear(d_model, d_model*4)
-    self.proj_2 = nn.Linear(d_model*4, vocab_num)
+  return av_attn/attn_normalizer
 
-  def forward(self, x):
-    x = self.proj_1(x)
-    x = self.proj_2(x)
-    return x
-
-class Transformer(nn.Module):
-  def __init__(self,vocab_num, d_model, max_seq_len, head_num, dropout, N):
-    super(Transformer,self).__init__()
-    self.embedding = Embeddings(vocab_num, d_model)
-    self.positional_encoding = PositionalEncoding(max_seq_len,d_model)
-
-    self.encoders = clones(Encoder(d_model=d_model, head_num=head_num, dropout=dropout), N)
-    self.decoders = clones(Decoder(d_model=d_model, head_num=head_num, dropout=dropout), N)
-
-    self.generator = Generator(d_model, vocab_num)
-
-  def forward(self, input, target, input_mask, target_mask, labels=None):
-      x = self.positional_encoding(self.embedding(input))
-      for encoder in self.encoders:
-        x = encoder(x, input_mask)
-
-      target = self.positional_encoding(self.embedding(target))
-      for decoder in self.decoders:
-        # target, encoder_output, target_mask, encoder_mask)
-        target = decoder(target, x, target_mask, input_mask)
-
-      lm_logits = self.generator(target)
-      loss = None
-      if labels is not None:
-        # Shift so that tokens < n predict n
-        shift_logits = lm_logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        # Flatten the tokens
-        loss_fct = CrossEntropyLoss(ignore_index=0)
-        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-
-      return lm_logits, loss
-  def encode(self,input, input_mask):
-    x = self.positional_encoding(self.embedding(input))
-    for encoder in self.encoders:
-      x = encoder(x, input_mask)
-    return x
-
-  def decode(self, encode_output, encoder_mask, target, target_mask):
-    target = self.positional_encoding(self.embedding(target))
-    for decoder in self.decoders:
-      target = decoder(target, encode_output, target_mask, encoder_mask)
-
-    lm_logits = self.generator(target)
-
-    return lm_logits
 
 if __name__=="__main__":
   pass

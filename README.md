@@ -12,5 +12,5 @@ My Performer by Pytorch
 
  
 # References
-
-
+- [Performer's Fast Attention (FAVOR+) Module](https://github.com/google-research/google-research/tree/master/performer/fast_attention)
+- [Google Performer Blog](https://ai.googleblog.com/2020/10/rethinking-attention-with-performers.html)
