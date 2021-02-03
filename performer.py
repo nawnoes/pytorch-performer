@@ -1,22 +1,38 @@
-import math
+# coding=utf-8
+# Performer pytorch
+# writen by Seonghwan Kim
+# Performer References
+# Google Research Github: https://github.com/google-research/google-research/blob/master/performer/fast_attention/tensorflow/fast_attention.py
+# teddykoker's numpy performer https://github.com/teddykoker/performer/blob/main/performer.py
+# https://github.com/lucidrains/performer-pytorch
+
+
 import torch
-import numpy as np
 import torch.nn as nn
 
-class FAVORAttention(nn.Module):
-  def __init__(self):
-    pass
+# generate IID Gaussian random features
+def iid_gaussian(m, d):
+    return torch.normal(0.0, 1.0, size=(m,d))
 
-  def z_sin_cos(x, omega):
-    pi = np.pi
-    sin = lambda x: torch.sin(2 * pi * x)
-    cos = lambda x: torch.cos(2 * pi * x)
+# generate orthogonal Gaussian random features
+def orthogonal_gaussian_random_feature(m, d):
+    def orthogonal_square():
+        # create orthogonal square matrix using Gram-Schmidt
+        q, _ = torch.qr(iid_gaussian(d, d))
+        return q.T
 
-    coef = torch.exp(x.pow(2).sum(dim=-1, keepdims=True) / 2)
-    product = np.einsum("...d,rd->...r", x, omega)
-    return coef * np.concatenate([sin(product), cos(product)], axis=-1)
-  def forward(self):
-    pass
+    num_squares = int(m / d)
+    blocks = [orthogonal_square() for _ in range(num_squares)]
+
+    remainder = m - d * num_squares
+    if remainder:
+        blocks.append(orthogonal_square()[:remainder])
+
+    matrix = torch.cat(blocks)
+    matrix /= torch.sqrt(num_squares + remainder / d)
+    # matrix = np.diag(np.sqrt(d) * np.ones(m)) @ matrix
+
+    return matrix
 
 def relu_kernel_transformation(data,
                                is_query,
@@ -58,29 +74,22 @@ def softmax_kernel_transformation(data,
   :param numerical_stabilizer: 수치 안정성을 위한 작은 값의 양의 상수
   :return:
   """
-  data_normalizer = 1.0 / (torch.sqrt(torch.sqrt(data.shape[-1].float())))
+  data_normalizer = 1.0 / (torch.sqrt(torch.sqrt(data.shape[-1])))
   data = data_normalizer * data
-  ratio = 1.0 / torch.sqrt(projection_matrix.shape[0].float())
+  ratio = 1.0 / torch.sqrt(projection_matrix.shape[0])
   data_dash = torch.einsum("blhd,md->blhm", data, projection_matrix)
+
   diag_data = torch.square(data)
   diag_data = torch.sum(diag_data, dim=-1) # 확인 필요.
   diag_data = diag_data / 2.0
   diag_data = diag_data.unsqueeze(dim=-1)
-  last_dims_t = (len(data_dash.shape) - 1,)
-  attention_dims_t = (len(data_dash.shape) - 3,)
+
   if is_query:
     data_dash = ratio * (
-        torch.exp(data_dash - diag_data - torch.max(data_dash, dim=-1, keepdims=True)) + numerical_stabilizer)
+        torch.exp(data_dash - diag_data - torch.max(data_dash, dim=-1, keepdims=True).values) + numerical_stabilizer)
   else:
-    # torch.max 부분 수정 필요
-    """
     data_dash = ratio * (
-        tf.math.exp(data_dash - diag_data - tf.math.reduce_max(
-            data_dash, axis=last_dims_t + attention_dims_t, keepdims=True)) +
-        numerical_stabilizer)
-    """
-    data_dash = ratio * (
-        torch.exp(data_dash - diag_data - torch.max(data_dash, axis=-1, keepdims=True)) + numerical_stabilizer)
+        torch.exp(data_dash - diag_data - torch.max(data_dash)) + numerical_stabilizer)
 
   return data_dash
 
@@ -107,6 +116,48 @@ def noncausal_denominator(qs, ks):
   all_ones = torch.ones([ks.shape[0]])
   ks_sum = torch.einsum("lbhm,l->bhm", ks, all_ones)
   return torch.einsum("lbhm,bhm->lbh", qs, ks_sum)
+
+
+def causal_numerator(qs, ks, vs):
+  """Computes not-normalized FAVOR causal attention A_{masked}V.
+  Args:
+    qs: query_prime tensor of the shape [L,B,H,M].
+    ks: key_prime tensor of the shape [L,B,H,M].
+    vs: value tensor of the shape [L,B,H,D].
+  Returns:
+    Not-normalized FAVOR causal attention A_{masked}V.
+  """
+
+  result = []
+  sums = torch.zeros_like(torch.einsum("ijk,ijl->ijkl", ks[0], vs[0]))
+
+  for index in range(qs.shape[0]):
+    sums = sums + torch.einsum("ijk,ijl->ijkl", ks[index], vs[index])
+    result.append(torch.einsum("ijkl,ijk->ijl", sums, qs[index])[None, Ellipsis])
+
+  result = torch.cat(result, dim=0)
+
+  return result
+
+def causal_denominator(qs, ks):
+  """Computes FAVOR normalizer in causal attention.
+  Args:
+    qs: query_prime tensor of the shape [L,B,H,M].
+    ks: key_prime tensor of the shape [L,B,H,M].
+  Returns:
+    FAVOR normalizer in causal attention.
+  """
+
+  result = []
+  sums = torch.zeros_like(ks[0])
+
+  for index in range(qs.shape[0]):
+    sums = sums + ks[index]
+    result.append(torch.sum(qs[index] * sums, dim=2)[None, Ellipsis])
+
+  result = torch.cat(result, dim=0)
+
+  return result
 
 def favor_attention(query, key, value,
                     kernel_transformation,
@@ -135,11 +186,12 @@ def favor_attention(query, key, value,
 
   # Causal or Not
   if causal:
-    # 구현 필요
-    pass
+    av_attn = causal_numerator(query_prime, key_prime, value)
+    attn_normalizer = causal_denominator(query_prime, key_prime)
   else:
     av_attn = noncausal_numerator(query_prime,key_prime, value)
     attn_normalizer = noncausal_denominator(query_prime,key_prime)
+
   av_attn = torch.transpose(av_attn,0,1)
   attn_normalizer = torch.transpose(attn_normalizer,0,1)
   attn_normalizer = attn_normalizer.unsqueeze(-1)
