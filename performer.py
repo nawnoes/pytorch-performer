@@ -5,10 +5,9 @@
 # Google Research Github: https://github.com/google-research/google-research/blob/master/performer/fast_attention/tensorflow/fast_attention.py
 # teddykoker's numpy performer https://github.com/teddykoker/performer/blob/main/performer.py
 # https://github.com/lucidrains/performer-pytorch
-
-
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # generate IID Gaussian random features
 def iid_gaussian(m, d):
@@ -49,7 +48,7 @@ def relu_kernel_transformation(data,
       orthogonal rows.
     numerical_stabilizer: 수치 안정성을 위한 작은 값의 양의 상수
   Returns:
-    대응되는 kernel feature map 반.
+    대응되는 kernel feature map
   """
   del is_query
   if projection_matrix is None:
@@ -161,7 +160,7 @@ def causal_denominator(qs, ks):
 
 def favor_attention(query, key, value,
                     kernel_transformation,
-                    causal,
+                    causal=False,
                     projection_matrix = None):
   """
   favor_attention 계산
@@ -198,6 +197,107 @@ def favor_attention(query, key, value,
 
   return av_attn/attn_normalizer
 
+class MultiHeadAttention(nn.Module):
+  def __init__(self, head_num =8 , dim = 512,dropout = 0.1, nb_random_features=0, causal=False, kernel_transformation=relu_kernel_transformation()):
+    super(MultiHeadAttention,self).__init__()
 
+    self.head_num = head_num
+    self.dim = dim
+    self.d_k = self.d_v = dim // head_num
+    self.nb_random_features = nb_random_features
+    self.kernel_transformation = kernel_transformation
+    self.causal = causal
+
+    self.w_q = nn.Linear(dim,dim)
+    self.w_k = nn.Linear(dim,dim)
+    self.w_v = nn.Linear(dim,dim)
+    self.w_o = nn.Linear(dim,dim)
+
+    self.favor_attention = favor_attention
+    self.dropout = nn.Dropout(p=dropout)
+
+  def forward(self, query, key, value):
+
+    random_features = orthogonal_gaussian_random_feature(self.nb_random_features, self.dim)
+
+    batche_num = query.size(0)
+
+    query = self.w_q(query).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
+    key = self.w_k(key).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
+    value = self.w_v(value).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
+
+    attention_result = self.favor_attention(query, key, value,
+                                            kernel_transformation=self.kernel_transformation,
+                                            causal=self.causal,
+                                            projection_matrix=random_features)
+    attention_result = attention_result.transpose(1,2).contiguous().view(batche_num, -1, self.head_num * self.d_k)
+
+    return self.w_o(attention_result)
+
+class FeedForward(nn.Module):
+  def __init__(self,dim, dropout = 0.1):
+    super(FeedForward,self).__init__()
+    self.w_1 = nn.Linear(dim, dim*4)
+    self.w_2 = nn.Linear(dim*4, dim)
+    self.dropout = nn.Dropout(p=dropout)
+
+  def forward(self, x):
+    return self.w_2(self.dropout(F.relu(self.w_1(x))))
+
+class LayerNorm(nn.Module):
+  def __init__(self, features, eps=1e-6):
+    super(LayerNorm,self).__init__()
+    self.a_2 = nn.Parameter(torch.ones(features))
+    self.b_2 = nn.Parameter(torch.zeros(features))
+    self.eps = eps
+  def forward(self, x):
+    mean = x.mean(-1, keepdim =True) # 평균
+    std = x.std(-1, keepdim=True)    # 표준편차
+
+    return self.a_2 * (x-mean)/ (std + self.eps) + self.b_2
+
+class ResidualConnection(nn.Module):
+  def __init__(self, size, dropout):
+    super(ResidualConnection,self).__init__()
+    self.norm = LayerNorm(size)
+    self.dropout = nn.Dropout(dropout)
+
+  def forward(self, x, sublayer):
+    return x + self.dropout((sublayer(self.norm(x))))
+
+class PerformerEncoder(nn.Module):
+  def __init__(self, dim, head_num, dropout):
+    super(PerformerEncoder,self).__init__()
+    self.multi_head_attention = MultiHeadAttention(dim= dim, head_num= head_num)
+    self.residual_1 = ResidualConnection(dim,dropout=dropout)
+
+    self.feed_forward = FeedForward(dim)
+    self.residual_2 = ResidualConnection(dim,dropout=dropout)
+
+  def forward(self, input):
+    x = self.residual_1(input, lambda x: self.multi_head_attention(x, x, x))
+    x = self.residual_2(x, lambda x: self.feed_forward(x))
+    return x
+
+class PerformerDecoder(nn.Module):
+  def __init__(self, dim,head_num, dropout):
+    super(PerformerDecoder,self).__init__()
+    self.masked_multi_head_attention = MultiHeadAttention(dim= dim, head_num= head_num, causal=True)
+    self.residual_1 = ResidualConnection(dim,dropout=dropout)
+
+    self.encoder_decoder_attention = MultiHeadAttention(dim= dim, head_num= head_num, causal=True)
+    self.residual_2 = ResidualConnection(dim,dropout=dropout)
+
+    self.feed_forward= FeedForward(dim)
+    self.residual_3 = ResidualConnection(dim,dropout=dropout)
+
+
+  def forward(self, target, encoder_output ):
+    # target, x, target_mask, input_mask
+    x = self.residual_1(target, lambda x: self.masked_multi_head_attention(x, x, x, target_mask))
+    x = self.residual_2(x, lambda x: self.encoder_decoder_attention(x, encoder_output, encoder_output, encoder_mask))
+    x = self.residual_3(x, self.feed_forward)
+
+    return x
 if __name__=="__main__":
   pass
