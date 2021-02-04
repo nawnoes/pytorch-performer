@@ -7,8 +7,8 @@ My Performer by Pytorch
 실질적으로는 어텐션을 개선한것과 같다. 이때 어텐션을 개선할때 Kernel Trick을 적용하였으며
 이 Kernel Trick을 적용한 어텐션을 FAVOR+ Attention으로 정의할 수 있다.
 
-- $Q'$ 과 K' 은 논문의 2.2와 2.3에서 계산하는 방법을 구했고
-- C := [V 1_L]과 같다.
+- $Q'$ 과 $K'$ 은 논문의 2.2와 2.3에서 계산하는 방법을 구했고
+- $C := [V 1_L]$과 같다.
 
 ```
 입력: Q, K, V, isBidirectional  --- Q,K,V는 (max_seq_len, hidden_dim) 모양의 텐서. isBidirectional는 True, False
