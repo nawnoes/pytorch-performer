@@ -197,9 +197,9 @@ def favor_attention(query, key, value,
 
   return av_attn/attn_normalizer
 
-class MultiHeadAttention(nn.Module):
+class MultiHeadFAVORAttention(nn.Module):
   def __init__(self, head_num =8 , dim = 512,dropout = 0.1, nb_random_features=0, causal=False, kernel_transformation=relu_kernel_transformation()):
-    super(MultiHeadAttention,self).__init__()
+    super(MultiHeadFAVORAttention,self).__init__()
 
     self.head_num = head_num
     self.dim = dim
@@ -268,7 +268,7 @@ class ResidualConnection(nn.Module):
 class PerformerEncoder(nn.Module):
   def __init__(self, dim, head_num, dropout):
     super(PerformerEncoder,self).__init__()
-    self.multi_head_attention = MultiHeadAttention(dim= dim, head_num= head_num)
+    self.multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num)
     self.residual_1 = ResidualConnection(dim,dropout=dropout)
 
     self.feed_forward = FeedForward(dim)
@@ -282,20 +282,20 @@ class PerformerEncoder(nn.Module):
 class PerformerDecoder(nn.Module):
   def __init__(self, dim,head_num, dropout):
     super(PerformerDecoder,self).__init__()
-    self.masked_multi_head_attention = MultiHeadAttention(dim= dim, head_num= head_num, causal=True)
+    self.masked_multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, causal=True)
     self.residual_1 = ResidualConnection(dim,dropout=dropout)
 
-    self.encoder_decoder_attention = MultiHeadAttention(dim= dim, head_num= head_num, causal=True)
+    self.encoder_decoder_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, causal=True)
     self.residual_2 = ResidualConnection(dim,dropout=dropout)
 
     self.feed_forward= FeedForward(dim)
     self.residual_3 = ResidualConnection(dim,dropout=dropout)
 
 
-  def forward(self, target, encoder_output ):
+  def forward(self, target, encoder_output):
     # target, x, target_mask, input_mask
-    x = self.residual_1(target, lambda x: self.masked_multi_head_attention(x, x, x, target_mask))
-    x = self.residual_2(x, lambda x: self.encoder_decoder_attention(x, encoder_output, encoder_output, encoder_mask))
+    x = self.residual_1(target, lambda x: self.masked_multi_head_attention(x, x, x))
+    x = self.residual_2(x, lambda x: self.encoder_decoder_attention(x, encoder_output, encoder_output))
     x = self.residual_3(x, self.feed_forward)
 
     return x
