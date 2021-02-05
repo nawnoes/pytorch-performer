@@ -64,8 +64,7 @@ def softmax_kernel_transformation(data,
                                   numerical_stabilizer=0.000001):
   """
   FAVOR+ 메커니즘을 사용하여 softmax kernel에 대한 random feature 계산
-  :param data: 입력 텐서. [B,L,H,D] B-batch dimension, L- attention dimensions,
-              H- Heads, D- features
+  :param data: 입력 텐서. [B,L,H,D] B-batch dimension, L- attention dimensions, H- Heads, D- features
   :param is_query: 입력 값이 쿼리 또는 인지 나타내는 값
   :param projection_matrix: [M, D]의 모양을 가진 랜덤 가우시안 매트릭스
                M - M은 Random Feature 수를 의미하며,
