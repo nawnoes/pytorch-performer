@@ -1,7 +1,10 @@
 # performer
-My Performer by Pytorch
+My Performer Pytorch
 
 ## Model
+### Kernel Trick
+낮은 차원에서 분류하기 어려운 경우, 더 높은 차원으로 매핑하여 해결할 수 있는데 차원이 높은 차원으로 갈수록
+space와 computation 비용은 더 높아지게 됩니다. 이러한 문제를 해결하기 커널트릭 
 ### FAVOR+ Attention
 : Bidrictional 또는 Unidirectional인 경우 다른 방향성의 어텐션을 가지며
 실질적으로는 어텐션을 개선한것과 같다. 이때 어텐션을 개선할때 Kernel Trick을 적용하였으며
