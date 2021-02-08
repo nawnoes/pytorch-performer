@@ -1,11 +1,10 @@
 import math
 import torch
-import numpy as np
 import torch.nn as nn
 from torch.autograd import Variable
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
-from util import clones
+from model.util import clones
 
 class SelfAttention(nn.Module):
   def __init__(self):

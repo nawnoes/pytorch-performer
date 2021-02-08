@@ -5,9 +5,12 @@
 # Google Research Github: https://github.com/google-research/google-research/blob/master/performer/fast_attention/tensorflow/fast_attention.py
 # teddykoker's numpy performer https://github.com/teddykoker/performer/blob/main/performer.py
 # https://github.com/lucidrains/performer-pytorch
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from model.embedding import PositionalEncoding, PositionalEmbedding, Embeddings
+from model.util import clones
 
 # generate IID Gaussian random features
 def iid_gaussian(m, d):
@@ -28,7 +31,7 @@ def orthogonal_gaussian_random_feature(m, d):
         blocks.append(orthogonal_square()[:remainder])
 
     matrix = torch.cat(blocks)
-    matrix /= torch.sqrt(num_squares + remainder / d)
+    matrix /= torch.sqrt(torch.tensor(num_squares + remainder / d))
     # matrix = np.diag(np.sqrt(d) * np.ones(m)) @ matrix
 
     return matrix
@@ -54,7 +57,7 @@ def relu_kernel_transformation(data,
   if projection_matrix is None:
     return nn.relu(data) + numerical_stabilizer
   else:
-    ratio = 1.0 / torch.sqrt(projection_matrix.shape[0].float())
+    ratio = 1.0 / math.sqrt(projection_matrix.shape[0])
     data_dash = ratio * torch.einsum("blhd,md->blhm", data, projection_matrix)
     return nn.relu(data_dash) + numerical_stabilizer
 
@@ -197,7 +200,7 @@ def favor_attention(query, key, value,
   return av_attn/attn_normalizer
 
 class MultiHeadFAVORAttention(nn.Module):
-  def __init__(self, head_num =8 , dim = 512,dropout = 0.1, nb_random_features=0, causal=False, kernel_transformation=relu_kernel_transformation()):
+  def __init__(self, head_num =8 , dim = 512,dropout = 0.1, nb_random_features=256, causal=False, kernel_transformation=relu_kernel_transformation):
     super(MultiHeadFAVORAttention,self).__init__()
 
     self.head_num = head_num
@@ -265,9 +268,9 @@ class ResidualConnection(nn.Module):
     return x + self.dropout((sublayer(self.norm(x))))
 
 class PerformerEncoder(nn.Module):
-  def __init__(self, dim, head_num, dropout):
+  def __init__(self, dim, head_num, dropout, nb_random_features):
     super(PerformerEncoder,self).__init__()
-    self.multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num)
+    self.multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features)
     self.residual_1 = ResidualConnection(dim,dropout=dropout)
 
     self.feed_forward = FeedForward(dim)
@@ -279,24 +282,42 @@ class PerformerEncoder(nn.Module):
     return x
 
 class PerformerDecoder(nn.Module):
-  def __init__(self, dim,head_num, dropout):
+  def __init__(self, dim,head_num, dropout, nb_random_features, causal=True):
     super(PerformerDecoder,self).__init__()
-    self.masked_multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, causal=True)
+    self.masked_multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features, causal=causal)
     self.residual_1 = ResidualConnection(dim,dropout=dropout)
 
-    self.encoder_decoder_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, causal=True)
+    self.feed_forward= FeedForward(dim)
     self.residual_2 = ResidualConnection(dim,dropout=dropout)
 
-    self.feed_forward= FeedForward(dim)
-    self.residual_3 = ResidualConnection(dim,dropout=dropout)
 
-
-  def forward(self, target, encoder_output):
+  def forward(self, input):
     # target, x, target_mask, input_mask
-    x = self.residual_1(target, lambda x: self.masked_multi_head_attention(x, x, x))
-    x = self.residual_2(x, lambda x: self.encoder_decoder_attention(x, encoder_output, encoder_output))
-    x = self.residual_3(x, self.feed_forward)
+    x = self.residual_1(input, lambda x: self.masked_multi_head_attention(x, x, x))
+    x = self.residual_2(x, self.feed_forward)
 
     return x
+class PerformerMLM(nn.Module):
+  def __init__(self, vocab_size, dim=512,  depth= 12, max_seq_len=512, head_num=8, nb_random_features=256, dropout= 0.1):
+    super(PerformerMLM,self).__init__()
+    self.token_emb=Embeddings(vocab_size, dim)
+    self.position_emb = PositionalEmbedding(dim,max_seq_len)
+
+    self.performers = clones(PerformerEncoder(dim=dim, head_num=head_num, nb_random_features=nb_random_features, dropout=dropout), depth)
+    self.norm = nn.LayerNorm(dim)
+    self.lm_head = nn.Linear(dim, vocab_size)
+
+  def forward(self, input_ids):
+    x = self.token_emb(input_ids)
+    x = x + self.position_emb(input_ids).type_as(x)
+
+    for performer_encoder in self.performers:
+      x = performer_encoder(x)
+    x = self.norm(x)
+
+    return self.lm_head(x)
+
+
+
 if __name__=="__main__":
   pass
