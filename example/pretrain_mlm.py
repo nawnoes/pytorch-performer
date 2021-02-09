@@ -148,7 +148,7 @@ class PerformerMLMTrainer(object):
                         self.writer.add_scalar('Train/Loss', step_loss / local_steps, global_steps)
                         self.writer.close()
                     pb.set_postfix_str(f'''{datetime.now()} | Train Loss: {step_loss / local_steps} | Steps: {global_steps}''')
-                    with open(f'{self.log_dir}/{self.model_name}_train_results.json', 'w') as results_file:
+                    with open(f'{self.log_dir}/{self.model_name}-train-log.json', 'w') as results_file:
                         json.dump(losses, results_file)
                         results_file.close()
                     step_loss = 0.0

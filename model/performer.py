@@ -39,7 +39,7 @@ def orthogonal_gaussian_random_feature(m, d):
 def relu_kernel_transformation(data,
                                is_query,
                                projection_matrix=None,
-                               numerical_stabilizer=0.001):
+                               numerical_stabilizer=0.00001):
   """Computes features for the ReLU-kernel.
   ReLU kernel에 대한 Random Features를 계산 from https://arxiv.org/pdf/2009.14794.pdf.
   Args:
@@ -54,12 +54,13 @@ def relu_kernel_transformation(data,
     대응되는 kernel feature map
   """
   del is_query
+  relu = nn.ReLU()
   if projection_matrix is None:
     return nn.relu(data) + numerical_stabilizer
   else:
     ratio = 1.0 / math.sqrt(projection_matrix.shape[0])
     data_dash = ratio * torch.einsum("blhd,md->blhm", data, projection_matrix)
-    return nn.relu(data_dash) + numerical_stabilizer
+    return relu(data_dash) + numerical_stabilizer
 
 def softmax_kernel_transformation(data,
                                   is_query,
@@ -220,20 +221,20 @@ class MultiHeadFAVORAttention(nn.Module):
 
   def forward(self, query, key, value):
 
-    random_features = orthogonal_gaussian_random_feature(self.nb_random_features, self.dim)
+    random_features = orthogonal_gaussian_random_feature(self.nb_random_features, self.d_k)
 
     batche_num = query.size(0)
 
-    query = self.w_q(query).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
-    key = self.w_k(key).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
-    value = self.w_v(value).view(batche_num, -1, self.head_num, self.d_k).transpose(1, 2)
+    query = self.w_q(query).view(batche_num, -1, self.head_num, self.d_k)#.transpose(1, 2)
+    key = self.w_k(key).view(batche_num, -1, self.head_num, self.d_k)#.transpose(1, 2)
+    value = self.w_v(value).view(batche_num, -1, self.head_num, self.d_k)#.transpose(1, 2)
 
     attention_result = self.favor_attention(query, key, value,
                                             kernel_transformation=self.kernel_transformation,
                                             causal=self.causal,
                                             projection_matrix=random_features)
-    attention_result = attention_result.transpose(1,2).contiguous().view(batche_num, -1, self.head_num * self.d_k)
-
+    # attention_result = attention_result.transpose(1,2).contiguous().view(batche_num, -1, self.head_num * self.d_k)
+    attention_result = attention_result.contiguous().view(batche_num, -1, self.head_num * self.d_k)
     return self.w_o(attention_result)
 
 class FeedForward(nn.Module):
