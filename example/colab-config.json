@@ -1,0 +1,16 @@
+{
+  "vocab_path" : "/content/drive/My Drive/Colab Notebooks/performer/data/wiki-vocab.txt",
+  "data_path" :"/content/drive/My Drive/Colab Notebooks/performer/data/wiki/" ,
+  "checkpoint_path" : "/content/drive/My Drive/Colab Notebooks/performer/checkpoints",
+  "model_name": "performer-mlm",
+  "dim": 512,
+  "depth": 12,
+  "n_head": 8,
+  "max_seq_len" : 512,
+  "nb_random_features": 256,
+  "batch_size" : 16,
+  "epochs" : 10,
+  "log_steps" : 1,
+  "ckpt_steps" : 500,
+  "gradient_accumulation_steps" : 1
+}

@@ -39,7 +39,7 @@ def orthogonal_gaussian_random_feature(m, d):
 def relu_kernel_transformation(data,
                                is_query,
                                projection_matrix=None,
-                               numerical_stabilizer=0.00001):
+                               numerical_stabilizer=0.000001):
   """Computes features for the ReLU-kernel.
   ReLU kernel에 대한 Random Features를 계산 from https://arxiv.org/pdf/2009.14794.pdf.
   Args:
@@ -76,9 +76,9 @@ def softmax_kernel_transformation(data,
   :param numerical_stabilizer: 수치 안정성을 위한 작은 값의 양의 상수
   :return:
   """
-  data_normalizer = 1.0 / (torch.sqrt(torch.sqrt(data.shape[-1])))
+  data_normalizer = data.shape[-1] ** -0.25
   data = data_normalizer * data
-  ratio = 1.0 / torch.sqrt(projection_matrix.shape[0])
+  ratio = projection_matrix.shape[0] ** -0.5
   data_dash = torch.einsum("blhd,md->blhm", data, projection_matrix)
 
   diag_data = torch.square(data)
@@ -107,7 +107,7 @@ def noncausal_numerator(qs, ks, vs):
   kvs = torch.einsum("lbhm,lbhd->bhmd", ks, vs)
   return torch.einsum("lbhm,bhmd->lbhd", qs, kvs)
 
-def noncausal_denominator(qs, ks):
+def noncausal_denominator(qs, ks, device):
   """Computes FAVOR normalizer in noncausal attention.
   Args:
     qs: query_prime tensor of the shape [L,B,H,M].
@@ -115,12 +115,12 @@ def noncausal_denominator(qs, ks):
   Returns:
     FAVOR normalizer in noncausal attention.
   """
-  all_ones = torch.ones([ks.shape[0]])
+  all_ones = torch.ones([ks.shape[0]]).to(device)
   ks_sum = torch.einsum("lbhm,l->bhm", ks, all_ones)
   return torch.einsum("lbhm,bhm->lbh", qs, ks_sum)
 
 
-def causal_numerator(qs, ks, vs):
+def causal_numerator(qs, ks, vs, device):
   """Computes not-normalized FAVOR causal attention A_{masked}V.
   Args:
     qs: query_prime tensor of the shape [L,B,H,M].
@@ -131,7 +131,7 @@ def causal_numerator(qs, ks, vs):
   """
 
   result = []
-  sums = torch.zeros_like(torch.einsum("ijk,ijl->ijkl", ks[0], vs[0]))
+  sums = torch.zeros_like(torch.einsum("ijk,ijl->ijkl", ks[0], vs[0])).to(device)
 
   for index in range(qs.shape[0]):
     sums = sums + torch.einsum("ijk,ijl->ijkl", ks[index], vs[index])
@@ -141,7 +141,7 @@ def causal_numerator(qs, ks, vs):
 
   return result
 
-def causal_denominator(qs, ks):
+def causal_denominator(qs, ks, device):
   """Computes FAVOR normalizer in causal attention.
   Args:
     qs: query_prime tensor of the shape [L,B,H,M].
@@ -151,7 +151,7 @@ def causal_denominator(qs, ks):
   """
 
   result = []
-  sums = torch.zeros_like(ks[0])
+  sums = torch.zeros_like(ks[0]).to(device)
 
   for index in range(qs.shape[0]):
     sums = sums + ks[index]
@@ -164,7 +164,8 @@ def causal_denominator(qs, ks):
 def favor_attention(query, key, value,
                     kernel_transformation,
                     causal=False,
-                    projection_matrix = None):
+                    projection_matrix = None,
+                    device= None):
   """
   favor_attention 계산
   :param query: 쿼리
@@ -188,11 +189,11 @@ def favor_attention(query, key, value,
 
   # Causal or Not
   if causal:
-    av_attn = causal_numerator(query_prime, key_prime, value)
-    attn_normalizer = causal_denominator(query_prime, key_prime)
+    av_attn = causal_numerator(query_prime, key_prime, value, device=device)
+    attn_normalizer = causal_denominator(query_prime, key_prime, device=device)
   else:
     av_attn = noncausal_numerator(query_prime,key_prime, value)
-    attn_normalizer = noncausal_denominator(query_prime,key_prime)
+    attn_normalizer = noncausal_denominator(query_prime,key_prime, device=device)
 
   av_attn = torch.transpose(av_attn,0,1)
   attn_normalizer = torch.transpose(attn_normalizer,0,1)
@@ -201,14 +202,19 @@ def favor_attention(query, key, value,
   return av_attn/attn_normalizer
 
 class MultiHeadFAVORAttention(nn.Module):
-  def __init__(self, head_num =8 , dim = 512,dropout = 0.1, nb_random_features=256, causal=False, kernel_transformation=relu_kernel_transformation):
+  def __init__(self, head_num =8 , dim = 512,dropout = 0.1, nb_random_features=256, causal=False, use_relu_kernel= False, device= None):
     super(MultiHeadFAVORAttention,self).__init__()
 
     self.head_num = head_num
     self.dim = dim
     self.d_k = self.d_v = dim // head_num
     self.nb_random_features = nb_random_features
-    self.kernel_transformation = kernel_transformation
+    self.device = device
+    self.kernel_transformation = softmax_kernel_transformation if not use_relu_kernel else relu_kernel_transformation
+
+    random_features = orthogonal_gaussian_random_feature(self.nb_random_features, self.d_k)
+    self.register_buffer('projection_matrix', random_features)
+
     self.causal = causal
 
     self.w_q = nn.Linear(dim,dim)
@@ -221,21 +227,20 @@ class MultiHeadFAVORAttention(nn.Module):
 
   def forward(self, query, key, value):
 
-    random_features = orthogonal_gaussian_random_feature(self.nb_random_features, self.d_k)
-
     batche_num = query.size(0)
 
-    query = self.w_q(query).view(batche_num, -1, self.head_num, self.d_k)#.transpose(1, 2)
-    key = self.w_k(key).view(batche_num, -1, self.head_num, self.d_k)#.transpose(1, 2)
-    value = self.w_v(value).view(batche_num, -1, self.head_num, self.d_k)#.transpose(1, 2)
+    query = self.w_q(query).view(batche_num, -1, self.head_num, self.d_k) #.transpose(1, 2)
+    key = self.w_k(key).view(batche_num, -1, self.head_num, self.d_k) #.transpose(1, 2)
+    value = self.w_v(value).view(batche_num, -1, self.head_num, self.d_k) #.transpose(1, 2)
 
     attention_result = self.favor_attention(query, key, value,
                                             kernel_transformation=self.kernel_transformation,
                                             causal=self.causal,
-                                            projection_matrix=random_features)
+                                            projection_matrix=self.projection_matrix,
+                                            device= self.device)
     # attention_result = attention_result.transpose(1,2).contiguous().view(batche_num, -1, self.head_num * self.d_k)
     attention_result = attention_result.contiguous().view(batche_num, -1, self.head_num * self.d_k)
-    return self.w_o(attention_result)
+    return self.dropout(self.w_o(attention_result))
 
 class FeedForward(nn.Module):
   def __init__(self,dim, dropout = 0.1):
@@ -269,9 +274,9 @@ class ResidualConnection(nn.Module):
     return x + self.dropout((sublayer(self.norm(x))))
 
 class PerformerEncoder(nn.Module):
-  def __init__(self, dim, head_num, dropout, nb_random_features):
+  def __init__(self, dim, head_num, dropout, nb_random_features, device):
     super(PerformerEncoder,self).__init__()
-    self.multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features)
+    self.multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features, device=device)
     self.residual_1 = ResidualConnection(dim,dropout=dropout)
 
     self.feed_forward = FeedForward(dim)
@@ -283,9 +288,9 @@ class PerformerEncoder(nn.Module):
     return x
 
 class PerformerDecoder(nn.Module):
-  def __init__(self, dim,head_num, dropout, nb_random_features, causal=True):
+  def __init__(self, dim,head_num, dropout, nb_random_features, device, causal=True):
     super(PerformerDecoder,self).__init__()
-    self.masked_multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features, causal=causal)
+    self.masked_multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features, device=device, causal=causal)
     self.residual_1 = ResidualConnection(dim,dropout=dropout)
 
     self.feed_forward= FeedForward(dim)
@@ -299,12 +304,15 @@ class PerformerDecoder(nn.Module):
 
     return x
 class PerformerMLM(nn.Module):
-  def __init__(self, vocab_size, dim=512,  depth= 12, max_seq_len=512, head_num=8, nb_random_features=256, dropout= 0.1):
+  def __init__(self, vocab_size, dim=512,  depth= 12, max_seq_len=512, head_num=8, nb_random_features=256, dropout= 0.1, device= None):
     super(PerformerMLM,self).__init__()
+
+    if device is None:
+      self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+
     self.token_emb=Embeddings(vocab_size, dim)
     self.position_emb = PositionalEmbedding(dim,max_seq_len)
-
-    self.performers = clones(PerformerEncoder(dim=dim, head_num=head_num, nb_random_features=nb_random_features, dropout=dropout), depth)
+    self.performers = clones(PerformerEncoder(dim=dim, head_num=head_num, nb_random_features=nb_random_features, dropout=dropout, device=self.device), depth)
     self.norm = nn.LayerNorm(dim)
     self.lm_head = nn.Linear(dim, vocab_size)
 

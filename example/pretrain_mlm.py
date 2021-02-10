@@ -184,11 +184,11 @@ class PerformerMLMTrainer(object):
                                 leave=True,
                                 total=len(dataloader),
                                 bar_format='{l_bar}{bar:10}{r_bar}'):
-            inputs, inputs_mask, labels = batch
-            inputs, inputs_mask, labels = inputs.to(self.device), inputs_mask.to(self.device), labels.to(self.device)
+            inputs, _, labels = batch
+            inputs, labels = inputs.to(self.device), labels.to(self.device)
 
             with torch.no_grad():
-                output = self.model(inputs, input_mask=inputs_mask)
+                output = self.model(inputs)
 
             loss_mx = labels != -100
             output_ids = output[loss_mx].view(-1, self.tokenizer.vocab_size)
