@@ -19,6 +19,8 @@ from example.dataset import DatasetForMLM
 from example.arg import ModelConfig
 from model.performer import PerformerMLM
 
+from torchsummary import summary
+
 
 class PerformerMLMTrainer(object):
     def __init__(self,
@@ -77,7 +79,8 @@ class PerformerMLMTrainer(object):
               ckpt_steps,
               gradient_accumulation_steps=1):
 
-        optimizer = Adafactor(self.model.parameters())
+        optimizer = Adafactor(params=self.model.parameters(),
+                              lr= 5e-3)
         loss_fn = nn.CrossEntropyLoss()
         losses = {}
         global_steps = 0
@@ -221,6 +224,8 @@ class PerformerMLMTrainer(object):
             'train_step': train_step,  # 현재 진행한 학습
         }, f'{self.checkpoint_path}/{self.model_name}.pth')
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def main():
     torch.manual_seed(9)
@@ -242,6 +247,12 @@ def main():
         head_num=config.n_head,
         nb_random_features= config.nb_random_features
     )
+    # for parameter in model.parameters():
+    #     print(parameter.shape)
+    print(count_parameters(model))
+    # Model Summary
+    summary(model,(config.batch_size, config.max_seq_len), batch_size=config.batch_size)
+
     trainer = PerformerMLMTrainer(dataset, model, tokenizer,model_name=config.model_name, checkpoint_path=config.checkpoint_path,max_len=config.max_seq_len, train_batch_size=config.batch_size,
                               eval_batch_size=config.batch_size)
 
