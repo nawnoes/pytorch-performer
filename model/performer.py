@@ -11,6 +11,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model.embedding import PositionalEncoding, PositionalEmbedding, Embeddings
 from model.util import clones
+from torch.nn import CrossEntropyLoss
+from transformers.activations import get_activation
 
 # generate IID Gaussian random features
 def iid_gaussian(m, d):
@@ -274,9 +276,9 @@ class ResidualConnection(nn.Module):
     return x + self.dropout((sublayer(self.norm(x))))
 
 class PerformerEncoder(nn.Module):
-  def __init__(self, dim, head_num, dropout, nb_random_features, device):
+  def __init__(self, dim, head_num, dropout, nb_random_features, device, use_relu_kernel= False):
     super(PerformerEncoder,self).__init__()
-    self.multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features, device=device)
+    self.multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features, device=device, use_relu_kernel= use_relu_kernel)
     self.residual_1 = ResidualConnection(dim,dropout=dropout)
 
     self.feed_forward = FeedForward(dim)
@@ -288,9 +290,9 @@ class PerformerEncoder(nn.Module):
     return x
 
 class PerformerDecoder(nn.Module):
-  def __init__(self, dim,head_num, dropout, nb_random_features, device, causal=True):
+  def __init__(self, dim,head_num, dropout, nb_random_features, device, use_relu_kernel= False,  causal=True):
     super(PerformerDecoder,self).__init__()
-    self.masked_multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features, device=device, causal=causal)
+    self.masked_multi_head_attention = MultiHeadFAVORAttention(dim= dim, head_num= head_num, nb_random_features=nb_random_features, device=device, use_relu_kernel= use_relu_kernel, causal=causal)
     self.residual_1 = ResidualConnection(dim,dropout=dropout)
 
     self.feed_forward= FeedForward(dim)
@@ -304,7 +306,7 @@ class PerformerDecoder(nn.Module):
 
     return x
 class PerformerMLM(nn.Module):
-  def __init__(self, vocab_size, dim=512,  depth= 12, max_seq_len=512, head_num=8, nb_random_features=256, dropout= 0.1, device= None):
+  def __init__(self, vocab_size, dim=512,  depth= 12, max_seq_len=512, head_num=8, nb_random_features=256, dropout= 0.1, use_relu_kernel=True, device= None):
     super(PerformerMLM,self).__init__()
 
     if device is None:
@@ -312,7 +314,7 @@ class PerformerMLM(nn.Module):
 
     self.token_emb=Embeddings(vocab_size, dim)
     self.position_emb = PositionalEmbedding(dim,max_seq_len)
-    self.performers = clones(PerformerEncoder(dim=dim, head_num=head_num, nb_random_features=nb_random_features, dropout=dropout, device=self.device), depth)
+    self.performers = clones(PerformerEncoder(dim=dim, head_num=head_num, nb_random_features=nb_random_features, dropout=dropout, use_relu_kernel= use_relu_kernel, device=self.device), depth)
     self.norm = nn.LayerNorm(dim)
     self.lm_head = nn.Linear(dim, vocab_size)
 
@@ -324,7 +326,69 @@ class PerformerMLM(nn.Module):
       x = performer_encoder(x)
     x = self.norm(x)
 
-    return self.lm_head(x)
+    return self.lm_head(x), x  # lm_head, performer_embedding
+
+
+class PerformerMRCHead(nn.Module):
+  def __init__(self, dim, num_labels,hidden_dropout_prob=0.1):
+    super().__init__()
+    self.dense = nn.Linear(dim, 4*dim)
+    self.dropout = nn.Dropout(hidden_dropout_prob)
+    self.out_proj = nn.Linear(4*dim,num_labels)
+
+  def forward(self, x, **kwargs):
+    # x = features[:, 0, :]  # take <s> token (equiv. to [CLS])
+    x = self.dense(x)
+    x = get_activation("gelu")(x)  # although BERT uses tanh here, it seems Electra authors used gelu here
+    x = self.dropout(x)
+    x = self.out_proj(x)
+    return x
+
+class PerformerMRCModel(nn.Module):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads, num_labels=2):
+        super().__init__()
+        self.performer = PerformerMLM(
+          vocab_size=num_tokens,
+          dim=dim,
+          depth=depth,
+          max_seq_len=max_seq_len,
+          head_num=heads,
+          use_relu_kernel = True
+        )
+        self.mrc_head = PerformerMRCHead(dim, num_labels)
+    def forward(self,
+                input_ids=None,
+                start_positions=None,
+                end_positions=None,
+                **kwargs):
+        # 1. reformer의 출력
+        lm_output, outputs = self.performer(input_ids,**kwargs)
+
+        # 2. mrc를 위한
+        logits = self.mrc_head(outputs)
+
+        start_logits, end_logits = logits.split(1, dim=-1)
+        start_logits = start_logits.squeeze(-1)
+        end_logits = end_logits.squeeze(-1)
+
+        if start_positions is not None and end_positions is not None:
+            # If we are on multi-GPU, split add a dimension
+            if len(start_positions.size()) > 1:
+                start_positions = start_positions.squeeze(-1)
+            if len(end_positions.size()) > 1:
+                end_positions = end_positions.squeeze(-1)
+            # sometimes the start/end positions are outside our model inputs, we ignore these terms
+            ignored_index = start_logits.size(1)
+            start_positions.clamp_(0, ignored_index)
+            end_positions.clamp_(0, ignored_index)
+
+            loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+            start_loss = loss_fct(start_logits, start_positions)
+            end_loss = loss_fct(end_logits, end_positions)
+            total_loss = (start_loss + end_loss) / 2
+            return total_loss
+        else:
+            return start_logits, end_logits
 
 
 
