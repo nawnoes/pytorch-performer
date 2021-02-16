@@ -10,13 +10,15 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 from transformers import BertTokenizer
-from fairseq.optim.adafactor import Adafactor
+from transformers.optimization import AdamW
+
 import os
 import json
 import logging
 from datetime import datetime
 from example.dataset import DatasetForMLM
 from example.arg import ModelConfig
+from example.schedule import WarmupLinearSchedule
 from model.performer import PerformerMLM
 
 from torchsummary import summary
@@ -256,6 +258,32 @@ def main():
                               eval_batch_size=config.batch_size)
 
     train_dataloader, eval_dataloader = trainer.build_dataloaders(train_test_split=0.1)
+
+    # Prepare optimizer
+    param_optimizer = list(model.named_parameters())
+    no_decay = ['bias', 'LayerNorm.weight']
+    optimizer_grouped_parameters = [
+      {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
+       'weight_decay': 0.01},
+      {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
+       'weight_decay': 0.0}
+    ]
+
+    learning_rate = 2e-4
+    warmup_proportion = 0.1
+    num_train_epochs = 10.0
+    max_grad_norm = 1.0
+    adam_epsilon = 1e-6
+    weight_decay = 0.01
+
+    num_train_optimization_steps = int(len(train_dataloader) / config.batch_size) * num_train_epochs
+
+    optimizer = AdamW(optimizer_grouped_parameters,
+                      lr=learning_rate,
+                      eps=adam_epsilon)
+    scheduler = WarmupLinearSchedule(optimizer,
+                                     warmup_steps=num_train_optimization_steps * 0.1,
+                                     t_total=num_train_optimization_steps)
 
     trainer.train(epochs=config.epochs,
                   train_dataloader=train_dataloader,

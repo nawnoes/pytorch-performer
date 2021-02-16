@@ -38,7 +38,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def evaluate(model, epoch, eval_examples,eval_features,predict_batch_size):
+def eval_korquad(model, epoch, eval_examples,eval_features,predict_batch_size):
   predict = dev_file
 
   all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
@@ -83,6 +83,7 @@ def evaluate(model, epoch, eval_examples,eval_features,predict_batch_size):
 
   output_prediction_file = os.path.join(output_dir, f"{model_name}_predictions_{epoch}.json")
   output_nbest_file = os.path.join(output_dir, f"{model_name}_nbest_predictions_{epoch}.json")
+
   write_predictions(eval_examples, eval_features, all_results,
                     n_best_size, max_answer_length,
                     False, output_prediction_file, output_nbest_file,
@@ -210,7 +211,8 @@ if __name__ == '__main__':
   optimizer_grouped_parameters = [
     {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
      'weight_decay': 0.01},
-    {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
+     'weight_decay': 0.0}
   ]
 
   optimizer = AdamW(optimizer_grouped_parameters,
@@ -269,7 +271,7 @@ if __name__ == '__main__':
     logger.info(model_checkpoint)
     output_model_file = os.path.join(output_dir, model_checkpoint)
     # 평가
-    evaluate(model, epoch, eval_examples, eval_features, train_batch_size)
+    eval_korquad(model, epoch, eval_examples, eval_features, train_batch_size)
     model.train()
 
     torch.save(model.state_dict(), output_model_file)
