@@ -13,4 +13,5 @@
   "log_steps" : 1,
   "ckpt_steps" : 10,
   "gradient_accumulation_steps" : 1
+
 }

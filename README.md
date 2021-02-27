@@ -11,7 +11,17 @@ The kernel expects to replace Transformer's Dot-Product Self attention.
 ## Test &  Example
 ### Language Model
 #### Pertrain
+pretrain masked language model. 
+- Pretrain file: `/example/train_mlm.py`.
+- Config file: `/example/config.json`
+
+##### Usage
+① prepare dataset and vocab you want to train
+② check configuration in config.json
+③ run `/example/train_mlm.py`
+
 #### Finetuing
+
 
 ## TODO
 - [ ] Performer performance test

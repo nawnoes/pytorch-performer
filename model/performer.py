@@ -3,8 +3,9 @@
 # writen by Seonghwan Kim
 # Performer References
 # Google Research Github: https://github.com/google-research/google-research/blob/master/performer/fast_attention/tensorflow/fast_attention.py
-# teddykoker's numpy performer https://github.com/teddykoker/performer/blob/main/performer.py
-# https://github.com/lucidrains/performer-pytorch
+# teddykoker's numpy performer: https://github.com/teddykoker/performer/blob/main/performer.py
+# lucidrains's performer-pytorch: https://github.com/lucidrains/performer-pytorch
+
 import math
 import torch
 import torch.nn as nn
@@ -316,7 +317,10 @@ class PerformerMLM(nn.Module):
     self.position_emb = PositionalEmbedding(dim,max_seq_len)
     self.performers = clones(PerformerEncoder(dim=dim, head_num=head_num, nb_random_features=nb_random_features, dropout=dropout, use_relu_kernel= use_relu_kernel, device=self.device), depth)
     self.norm = nn.LayerNorm(dim)
-    self.lm_head = nn.Linear(dim, vocab_size)
+    self.lm_head = nn.Sequential(
+      nn.Linear(dim, dim),
+      nn.Linear(dim, vocab_size)
+    )
 
   def forward(self, input_ids):
     x = self.token_emb(input_ids)

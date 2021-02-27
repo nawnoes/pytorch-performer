@@ -2,8 +2,6 @@ import math
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-from torch.nn import Identity
-import torch.nn.functional as F
 
 class Embeddings(nn.Module):
   def __init__(self, vocab_size, dim):

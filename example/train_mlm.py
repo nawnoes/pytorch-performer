@@ -73,16 +73,16 @@ class PerformerMLMTrainer(object):
         logging.info(f'''train_dataloader size: {len(train_loader.dataset)} | shuffle: {train_shuffle}
                          eval_dataloader size: {len(eval_loader.dataset)} | shuffle: {eval_shuffle}''')
         return train_loader, eval_loader
+
     def train(self,
               epochs,
               train_dataloader,
               eval_dataloader,
+              optimizer,
+              scheduler,
               log_steps,
-              ckpt_steps,
-              gradient_accumulation_steps=1):
+              ckpt_steps):
 
-        optimizer = Adafactor(params=self.model.parameters(),
-                              lr= 5e-3)
         loss_fn = nn.CrossEntropyLoss()
         losses = {}
         global_steps = 0
@@ -91,6 +91,7 @@ class PerformerMLMTrainer(object):
         start_epoch = 0
         start_step = 0
 
+        # Load Checkpoint
         if os.path.isfile(f'{self.checkpoint_path}/{self.model_name}.pth'):
             checkpoint = torch.load(f'{self.checkpoint_path}/{self.model_name}.pth', map_location=self.device)
             start_epoch = checkpoint['epoch']
@@ -100,18 +101,15 @@ class PerformerMLMTrainer(object):
 
             self.model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
+        # Model Setting
         self.model.train()
-
-        if self.n_gpu > 1:
-            self.model = nn.DataParallel(self.model)
-            logging.info(f'{datetime.now()} | Utilizing {self.n_gpu} GPUs')
-
         self.model.to(self.device)
+
         logging.info(f'{datetime.now()} | Moved model to: {self.device}')
         logging.info(f'{datetime.now()} | train_batch_size: {self.train_batch_size} | eval_batch_size: {self.eval_batch_size}')
         logging.info(f'{datetime.now()} | Epochs: {epochs} | log_steps: {log_steps} | ckpt_steps: {ckpt_steps}')
-        logging.info(f'{datetime.now()} | gradient_accumulation_steps: {gradient_accumulation_steps}')
 
         for epoch in range(start_epoch, epochs): #tqdm(range(epochs), desc='Epochs', position=0):
             logging.info(f'{datetime.now()} | Epoch: {epoch}')
@@ -133,10 +131,6 @@ class PerformerMLMTrainer(object):
                 labels = labels[loss_mx].view(-1)
 
                 loss = loss_fn(output, labels)
-
-                if gradient_accumulation_steps > 1:
-                    loss /= gradient_accumulation_steps
-
                 loss.backward()
 
                 step_loss += loss.item()
@@ -144,33 +138,32 @@ class PerformerMLMTrainer(object):
                 local_steps += 1
                 global_steps += 1
 
-                if global_steps % gradient_accumulation_steps == 0:
-                    optimizer.step()
-                    self.model.zero_grad()
+                scheduler.step()
+                optimizer.step()
+                optimizer.zero_grad()
 
+                # print log
                 if global_steps % log_steps == 0:
                     if self.tb_writer:
                         self.writer.add_scalar('Train/Loss', step_loss / local_steps, global_steps)
                         self.writer.close()
                     pb.set_postfix_str(f'''{datetime.now()} | Train Loss: {step_loss / local_steps} | Steps: {global_steps}''')
-                    with open(f'{self.log_dir}/{self.model_name}-train-log.json', 'w') as results_file:
-                        json.dump(losses, results_file)
-                        results_file.close()
                     step_loss = 0.0
                     local_steps = 0
-
+                # save model & log
                 if global_steps % ckpt_steps == 0:
-                    self.save(epoch, self.model, optimizer, losses, global_steps)
+                    self.save(epochs, self.model, optimizer, scheduler, losses, global_steps)
                     logging.info(f'{datetime.now()} | Saved checkpoint to: {self.checkpoint_path}')
+                    with open(f'{self.log_dir}/{self.model_name}-train-log.json', 'w') as results_file:
+                      json.dump(losses, results_file)
+                      results_file.close()
 
-            # Evaluate every epoch
+            # evaluate
             self.evaluate(eval_dataloader)
             self.model.train()
             start_step = 0
-
-        self.save(epochs,self.model,optimizer,losses, global_steps)
-
-        return self.model
+        # save model
+        self.save(epochs,self.model,optimizer, scheduler,losses, global_steps)
 
     def evaluate(self, dataloader):
         loss_fn = nn.CrossEntropyLoss()
@@ -216,12 +209,12 @@ class PerformerMLMTrainer(object):
                 results_file.write(f'{datetime.now()} | Step: {step} | Eval Loss: {total_eval_loss}\n')
                 results_file.close()
 
-        return None
-    def save(self, epoch, model, optimizer, losses, train_step):
+    def save(self, epoch, model, optimizer, scheduler, losses, train_step):
         torch.save({
             'epoch': epoch,  # 현재 학습 epoch
             'model_state_dict': model.state_dict(),  # 모델 저장
             'optimizer_state_dict': optimizer.state_dict(),  # 옵티마이저 저장
+            'scheduler_state_dict': scheduler.state_dict(),
             'losses': losses,  # Loss 저장
             'train_step': train_step,  # 현재 진행한 학습
         }, f'{self.checkpoint_path}/{self.model_name}.pth')
@@ -234,6 +227,7 @@ def main():
 
     # Config
     config = ModelConfig(config_path='./config.json').get_config()
+
     # Tokenizer
     tokenizer = BertTokenizer(vocab_file=config.vocab_path, do_lower_case=False)
 
@@ -248,15 +242,19 @@ def main():
         head_num=config.n_head,
         nb_random_features= config.nb_random_features
     )
-    # for parameter in model.parameters():
-    #     print(parameter.shape)
+
     print(count_parameters(model))
-    # Model Summary
+    # model summary
     summary(model,(config.batch_size, config.max_seq_len), batch_size=config.batch_size)
 
-    trainer = PerformerMLMTrainer(dataset, model, tokenizer,model_name=config.model_name, checkpoint_path=config.checkpoint_path,max_len=config.max_seq_len, train_batch_size=config.batch_size,
-                              eval_batch_size=config.batch_size)
-
+    # traniner
+    trainer = PerformerMLMTrainer(dataset, model, tokenizer,
+                                  model_name=config.model_name,
+                                  checkpoint_path=config.checkpoint_path,
+                                  max_len=config.max_seq_len,
+                                  train_batch_size=config.batch_size,
+                                  eval_batch_size=config.batch_size)
+    # dataloader
     train_dataloader, eval_dataloader = trainer.build_dataloaders(train_test_split=0.1)
 
     # Prepare optimizer
@@ -270,27 +268,28 @@ def main():
     ]
 
     learning_rate = 2e-4
-    warmup_proportion = 0.1
-    num_train_epochs = 10.0
-    max_grad_norm = 1.0
     adam_epsilon = 1e-6
-    weight_decay = 0.01
-
-    num_train_optimization_steps = int(len(train_dataloader) / config.batch_size) * num_train_epochs
 
     optimizer = AdamW(optimizer_grouped_parameters,
                       lr=learning_rate,
                       eps=adam_epsilon)
-    scheduler = WarmupLinearSchedule(optimizer,
-                                     warmup_steps=num_train_optimization_steps * 0.1,
-                                     t_total=num_train_optimization_steps)
+
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer=optimizer,
+        max_lr=0.0001,
+        pct_start=0.01,
+        anneal_strategy="linear",
+        epochs=config.epochs,
+        steps_per_epoch=len(train_dataloader)
+    )
 
     trainer.train(epochs=config.epochs,
                   train_dataloader=train_dataloader,
                   eval_dataloader=eval_dataloader,
+                  optimizer=optimizer,
+                  scheduler=scheduler,
                   log_steps=config.log_steps,
-                  ckpt_steps=config.ckpt_steps,
-                  gradient_accumulation_steps=config.gradient_accumulation_steps)
+                  ckpt_steps=config.ckpt_steps)
 
 if __name__ == '__main__':
     main()
