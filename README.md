@@ -16,9 +16,9 @@ pretrain masked language model.
 - Config file: `/example/config.json`
 
 ##### Usage
-① prepare dataset and vocab you want to train
-② check configuration in config.json
-③ run `/example/train_mlm.py`
+① prepare dataset and vocab you want to train  
+② check configuration in config.json  
+③ run `/example/train_mlm.py`  
 
 #### Finetuing
 
