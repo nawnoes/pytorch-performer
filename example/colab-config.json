@@ -1,5 +1,5 @@
 {
-  "vocab_path" : "/content/drive/My Drive/Colab Notebooks/performer/data/wiki-vocab.txt",
+  "vocab_path" : "/content/drive/My Drive/Colab Notebooks/performer/data/vocab-v1.txt",
   "data_path" :"/content/drive/My Drive/Colab Notebooks/performer/data/wiki/" ,
   "checkpoint_path" : "/content/drive/My Drive/Colab Notebooks/performer/checkpoints",
   "model_name": "performer-mlm",

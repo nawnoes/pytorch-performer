@@ -10,7 +10,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model.embedding import PositionalEncoding, PositionalEmbedding, Embeddings
+from model.embedding import PositionalEmbedding, Embeddings
 from model.util import clones
 from torch.nn import CrossEntropyLoss
 from transformers.activations import get_activation
